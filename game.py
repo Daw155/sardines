@@ -46,7 +46,7 @@ def authenticate(room, token):
     require(room is not None, "That room doesn't exist or has expired.", 404)
     digest = token_hash(token)
     me = next((p for p in room["players"] if secrets.compare_digest(p["token_hash"], digest)), None)
-    require(me is not None, "Your place in this room could not be found. Join again from the home screen.", 401)
+    require(me is not None, "You're no longer in this room. The host may have removed you.", 401)
     return me
 
 
@@ -89,11 +89,38 @@ def act(room, me, action, data, now):
     if action_key in room["actions"]:
         return
     host = me["id"] == room["host_id"]
-    if action in ("configure", "randomize", "start", "end", "reset"):
+    if action in ("configure", "randomize", "start", "end", "reset", "kick"):
         require(host, "Only the host can do that.", 403)
     if action in ("configure", "randomize", "start"):
         require(room["phase"] == "lobby", "Return to the lobby before starting another round.", 409)
-    if action == "configure":
+    if action == "rename":
+        name = clean_text(data.get("name"), 24, "your name")
+        require(all(p["id"] == me["id"] or p["name"].casefold() != name.casefold()
+                    for p in room["players"]), "That name is already in this room. Try a nickname.", 409)
+        me["name"] = name
+    elif action == "kick":
+        target = next((p for p in room["players"] if p["id"] == data.get("player_id")), None)
+        require(target is not None, "That player has already left.", 404)
+        require(target["id"] != me["id"], "Use Leave room to leave yourself.")
+        room["players"].remove(target)
+        room["scheduled"].pop(target["id"], None)
+        if room["phase"] in ("hiding", "seeking"):
+            sardines = [p for p in room["players"] if p["role"] == "sardine"]
+            seekers = [p for p in room["players"] if p["role"] == "seeker"]
+            room["sardine_count"] = len(sardines)
+            if not sardines or not seekers:
+                finish(room, now, "not_enough_players")
+            elif room["phase"] == "hiding" and all(p["hidden"] for p in sardines):
+                room.update(phase="seeking", started_at=now)
+            elif room["phase"] == "seeking" and all(p["found"] for p in seekers):
+                finish(room, now, "everyone_found")
+        if room["phase"] in ("lobby", "ended"):
+            room["sardine_count"] = max(1, min(room["sardine_count"], len(room["players"]) - 1))
+            if room["phase"] == "lobby":
+                # Removing a player changes the pool; require a fresh shuffle.
+                for p in room["players"]:
+                    p["role"] = "seeker"
+    elif action == "configure":
         count = data.get("count")
         require(type(count) is int and 1 <= count < max(2, len(room["players"])),
                 "Keep at least one sardine and one seeker.")

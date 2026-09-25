@@ -21,9 +21,9 @@ class GameTests(unittest.TestCase):
             self.players.append(newcomer)
         self.serial = 0
 
-    def action(self, p, name, now=1000, **data):
+    def action(self, p, action_name, now=1000, **data):
         self.serial += 1
-        act(self.room, p, name, {'round': self.room['round'], 'request_id': f'request-{self.serial}', **data}, now)
+        act(self.room, p, action_name, {'round': self.room['round'], 'request_id': f'request-{self.serial}', **data}, now)
 
     def start(self):
         self.action(self.host, 'configure', count=2)
@@ -136,6 +136,97 @@ class GameTests(unittest.TestCase):
         self.action(self.host, 'leave')
         self.assertEqual(self.room['host_id'], next_host)
 
+    def test_rename_preserves_identity_and_round_progress(self):
+        self.seek()
+        sardine = self.sardines[0]
+        before = dict(sardine)
+        self.action(sardine, 'schedule', now=1020, text='A queued clue')
+        self.action(sardine, 'rename', name=' New nickname ')
+        self.assertEqual(sardine, before | {'name': 'New nickname'})
+        self.assertIn(sardine['id'], self.room['scheduled'])
+        publish_due(self.room, 1310)
+        self.assertEqual(self.room['hints'][0]['author'], 'New nickname')
+        self.assertEqual(self.room['started_at'], 1010)
+
+    def test_rename_validation_and_case_change(self):
+        for name in ['', ' ', None, 'a' * 25, ' SAM ']:
+            with self.assertRaises(GameError): self.action(self.host, 'rename', name=name)
+        self.action(self.host, 'rename', name='ALEX')
+        self.assertEqual(self.host['name'], 'ALEX')
+        self.action(self.players[1], 'rename', name='Samantha', player_id=self.host['id'])
+        self.assertEqual(self.host['name'], 'ALEX')
+        self.assertEqual(self.players[1]['name'], 'Samantha')
+
+    def test_kick_permissions_and_lobby_reset(self):
+        target = self.players[1]
+        with self.assertRaises(GameError): self.action(target, 'kick', player_id=self.players[2]['id'])
+        with self.assertRaises(GameError): self.action(self.host, 'kick', player_id=self.host['id'])
+        with self.assertRaises(GameError): self.action(self.host, 'kick', player_id='missing')
+        self.action(self.host, 'configure', count=3)
+        self.action(self.host, 'randomize')
+        self.action(self.host, 'kick', player_id=target['id'])
+        self.assertEqual(len(self.room['players']), 3)
+        self.assertEqual(self.room['sardine_count'], 2)
+        self.assertTrue(all(p['role'] == 'seeker' for p in self.room['players']))
+        with self.assertRaises(GameError): authenticate(self.room, '0' * 48)
+
+    def test_kicking_unready_sardine_starts_search(self):
+        self.start()
+        target = next(p for p in self.sardines if p['id'] != self.host['id'])
+        remaining = next(p for p in self.sardines if p['id'] != target['id'])
+        self.action(remaining, 'hidden', now=1005)
+        self.action(self.host, 'kick', player_id=target['id'], now=1012)
+        self.assertEqual(self.room['phase'], 'seeking')
+        self.assertEqual(self.room['started_at'], 1012)
+        self.assertEqual(self.room['sardine_count'], 1)
+
+    def test_kicking_sardine_cancels_their_hint(self):
+        self.seek()
+        target = next(p for p in self.sardines if p['id'] != self.host['id'])
+        self.action(target, 'schedule', now=1020, text='Remove this clue')
+        self.action(self.host, 'kick', player_id=target['id'], now=1030)
+        publish_due(self.room, 1500)
+        self.assertEqual(self.room['hints'], [])
+        self.assertEqual(self.room['phase'], 'seeking')
+
+    def test_kicking_last_unfound_seeker_finishes_round(self):
+        self.seek()
+        target = next(p for p in self.seekers if p['id'] != self.host['id'])
+        other = next(p for p in self.seekers if p['id'] != target['id'])
+        self.action(other, 'found', found=True, now=1020)
+        self.action(self.host, 'kick', player_id=target['id'], now=1030)
+        self.assertEqual(self.room['end_reason'], 'everyone_found')
+        self.assertEqual(self.room['ended_at'], 1030)
+
+    def test_kicking_last_role_ends_round_and_allows_replay(self):
+        for removed_role in ('sardine', 'seeker'):
+            with self.subTest(role=removed_role):
+                self.setUp()
+                # Put the host in the opposite role to allow removing that role.
+                self.action(self.host, 'configure', count=2)
+                chosen = self.players[1:3] if removed_role == 'sardine' else [self.host, self.players[1]]
+                with patch('game.secrets.SystemRandom') as rng:
+                    rng.return_value.sample.return_value = chosen
+                    self.action(self.host, 'randomize')
+                self.action(self.host, 'start')
+                for p in list(self.room['players']):
+                    if p['role'] == removed_role:
+                        self.action(self.host, 'kick', player_id=p['id'])
+                self.assertEqual(self.room['phase'], 'ended')
+                self.assertEqual(self.room['end_reason'], 'not_enough_players')
+                self.action(self.host, 'reset')
+                self.assertGreaterEqual(self.room['sardine_count'], 1)
+                self.action(self.host, 'randomize')
+                self.action(self.host, 'start')
+
+    def test_kick_works_after_round_and_is_idempotent(self):
+        self.seek()
+        self.action(self.host, 'end')
+        data = {'round': self.room['round'], 'request_id': 'kick-retry-id', 'player_id': self.players[1]['id']}
+        act(self.room, self.host, 'kick', data, 1100)
+        act(self.room, self.host, 'kick', data, 1100)
+        self.assertEqual(len(self.room['players']), 3)
+
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
@@ -208,6 +299,22 @@ class ApiTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=8) as pool:
             list(pool.map(add, range(20)))
         self.assertEqual(self.store.update('ABC234', lambda r: len(r['players'])), 21)
+
+    def test_rename_and_kick_api_revoke_access(self):
+        host = self.client.post('/api/rooms', json={'name': 'Host'}, headers=self.headers).json
+        url = '/api/rooms/' + host['code']
+        guest_headers = {'Authorization': 'Bearer ' + 'g' * 48}
+        guest = self.client.post(url + '/join', json={'name': 'Guest'}, headers=guest_headers).json
+        data = {'round': 0, 'request_id': 'rename-request', 'name': 'New name'}
+        renamed = self.client.post(url + '/actions/rename', json=data, headers=guest_headers)
+        self.assertEqual(renamed.status_code, 200)
+        self.assertEqual(renamed.json['me_id'], guest['me_id'])
+        self.assertEqual(self.client.get(url, headers=self.headers).json['players'][1]['name'], 'New name')
+        kick = {'round': 0, 'request_id': 'kick-request', 'player_id': guest['me_id']}
+        self.assertEqual(self.client.post(url + '/actions/kick', json=kick, headers=guest_headers).status_code, 403)
+        self.assertEqual(self.client.post(url + '/actions/kick', json=kick, headers=self.headers).status_code, 200)
+        self.assertEqual(self.client.get(url, headers=guest_headers).status_code, 401)
+        self.assertEqual(self.client.post(url + '/actions/rename', json=data, headers=guest_headers).status_code, 401)
 
     def test_malformed_requests(self):
         self.assertEqual(self.client.post('/api/rooms', json=[], headers=self.headers).status_code, 400)

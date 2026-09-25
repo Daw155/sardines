@@ -34,6 +34,17 @@ Static assets live in `public/assets` so Vercel serves them through its CDN. Fla
 - Sardines can draft hints while hiding. Once seeking begins, they can send immediately or schedule one hint each for the next five-minute boundary (05:00, 10:00, etc.). A new scheduled hint replaces that sardine's previous queued hint. Sending an immediate hint leaves the scheduled one intact. Scheduled drafts are private until publication; published hints are visible to everyone.
 - Seekers toggle whether they found a sardine. The final found vote immediately finishes the round, after which undo is no longer available. The host can end hiding or seeking early after confirmation.
 - The host returns everyone to the lobby for another round. Leaving between rounds transfers hosting to the next player. Closing a tab does not remove the player, so they can reconnect; if someone abandons an active round, the host can end it.
+- **Edit name** changes your name at any time without changing your identity, role, or progress. Names still need to be unique. Published hints retain the name used when they were sent; queued hints use the author's name at publication.
+- The host can expand **Players** and tap **Kick**, then confirm, in any phase. Kicked players lose access on their next request and return to the entry form. Their queued hints are canceled. During hiding, removing the last unready sardine can start the search; during seeking, removing the last unfound seeker can finish the round. If either role has no players left, the round ends. Lobby kicks clear roles so the host can shuffle again. A kick removes membership, rather than permanently banning someone from joining again between rounds.
+- The app opens directly to the name/create/join form. During a round the player list is collapsed, keeping the timer, main action, and hints visible.
+
+## A free address for the app
+
+Vercel provides a free `your-name.vercel.app` address. To use a cleaner name, open the project in Vercel, go to **Settings → Domains**, and add an available name such as `sardines-with-friends.vercel.app` (or edit the existing Vercel domain if that option is shown). Assign it to Production. Vercel manages DNS and HTTPS for its own subdomains, so no registrar setup is required. See [Vercel's production domains](https://vercel.com/blog/default-production-domain) and [domain settings](https://vercel.com/docs/domains/working-with-domains/add-a-domain).
+
+A standalone domain such as `yourgame.com` normally has a registration/renewal cost; Vercel's free hosting does not include purchasing it. If you already own a domain, you can add a subdomain such as `sardines.yourdomain.com` to this project on Hobby: enter it in **Settings → Domains → Add Domain**, then copy the CNAME record Vercel shows into your DNS provider. Wait for verification. Domain registration costs still apply to the parent domain.
+
+Choose the address before a game: browser sessions are saved per origin, so switching between the old and new domain does not carry over a player's saved session.
 
 ## Timing and storage
 
@@ -50,4 +61,4 @@ This is intended for small private friend groups. Anyone with a room code can jo
 node --check public/assets/app.js
 ```
 
-Tests cover round transitions, all-sardines readiness, found/undo, automatic ending, host permissions, join restrictions, scheduled hint timing, draft privacy, replay, reconnects, request validation, concurrent joins, and Redis conflict retries.
+Tests cover round transitions, all-sardines readiness, found/undo, automatic ending, host permissions, kicking during all phases, name changes, revoked access, join restrictions, scheduled hint timing, draft privacy, replay, reconnects, request validation, concurrent joins, and Redis conflict retries.
