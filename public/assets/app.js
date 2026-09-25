@@ -9,7 +9,7 @@ const storage = {
 let session = storage.get('sardines-session');
 if (!session || typeof session.code !== 'string' || typeof session.token !== 'string') session = null;
 let room = null, busy = false, polling = false, online = true, signature = '', toastTimeout;
-let clockOffset = 0, draft = '', stateEpoch = 0, playersOpen = false;
+let clockOffset = 0, draft = '', stateEpoch = 0;
 let homeName = storage.get('sardines-name', '');
 let joinCode = new URLSearchParams(location.search).get('room')?.slice(0, 6).toUpperCase() || '';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -48,21 +48,28 @@ function acceptRoom(value) {
   if (previous && (previous.round !== room.round || (previous.phase !== 'lobby' && room.phase === 'lobby'))) {
     draft = ''; storage.remove(`sardines-draft-${session.code}`);
   }
-  if (!previous || previous.phase !== room.phase) playersOpen = room.phase === 'lobby';
   homeName = me().name; storage.set('sardines-name', homeName);
   if (previous?.phase === 'hiding' && room.phase === 'seeking') toast('Everyone is hidden. Start seeking!');
   if (previous && previous.phase !== 'ended' && room.phase === 'ended') toast(endMessage());
   renderRoom();
 }
 
+function updateHeader() {
+  const code = document.querySelector('#header-code');
+  code.hidden = !room;
+  code.textContent = room?.code || '';
+  code.setAttribute('aria-label', room ? `Copy room code ${room.code}` : 'Room code');
+}
+
 function home() {
-  root.innerHTML = `<form id="entry-form" class="entry" aria-label="Create or join a room">
+  updateHeader();
+  root.innerHTML = `<form id="entry-form" class="card entry" aria-label="Create or join a room">
     <label for="player-name">Your name</label>
     <input id="player-name" name="name" placeholder="Name or nickname" maxlength="24" autocomplete="nickname" value="${esc(homeName)}" required>
-    <button class="button" type="submit" data-entry="create">Create room</button>
-    <div class="divider">or</div>
-    <label for="room-code">Room code</label>
-    <div class="join-row"><input id="room-code" name="code" placeholder="ABC234" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${esc(joinCode)}"><button class="button secondary" type="submit" data-entry="join">Join</button></div>
+    <div class="entry-actions">
+      <button class="button" type="submit" data-entry="create">Create</button>
+      <div class="join-row"><label class="sr-only" for="room-code">Room code</label><input id="room-code" name="code" placeholder="Code" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${esc(joinCode)}"><button class="button secondary" type="submit" data-entry="join">Join</button></div>
+    </div>
   </form>`;
   document.querySelector('#entry-form').addEventListener('submit', enter);
   document.querySelector('#room-code').addEventListener('keydown', event => {
@@ -93,23 +100,38 @@ function endMessage() {
   return {everyone_found: 'Everyone found a sardine!', host_ended: 'The host ended the round.', not_enough_players: 'Round ended: not enough sardines or seekers.'}[room.end_reason] || 'Round ended.';
 }
 
+function progressBar(value, total, label) {
+  return `<progress class="round-progress" value="${value}" max="${total}" aria-label="${label}"></progress>`;
+}
+
 function gamePanel() {
   const p = me(), sardine = p.role === 'sardine';
+  const heading = `<div class="section-heading"><h2>Round progress</h2><span class="role ${sardine ? 'sardine' : 'seeker'}">${sardine ? 'Sardine' : 'Seeker'}</span></div>`;
   if (room.phase === 'lobby') {
     const assigned = room.players.some(p => p.role === 'sardine');
-    const ready = room.players.filter(p => p.role === 'sardine').length === room.sardine_count && room.players.length > room.sardine_count;
-    return `<section class="game"><h1>Waiting for players</h1><p class="muted">${assigned ? `You’re a ${p.role}.` : 'Share the code to invite friends.'}</p>${isHost() ? `
-      <div class="settings-row"><label id="sardines-label">Sardines</label><div class="stepper" role="group" aria-labelledby="sardines-label"><button data-action="count-down" aria-label="Fewer sardines" ${room.sardine_count <= 1 ? 'disabled' : ''}>−</button><output>${room.sardine_count}</output><button data-action="count-up" aria-label="More sardines" ${room.sardine_count >= room.players.length - 1 ? 'disabled' : ''}>+</button></div></div>
-      <div class="button-row"><button class="button secondary" data-action="randomize" ${room.players.length < 2 ? 'disabled' : ''}>Shuffle roles</button><button class="button" data-action="start" ${ready ? '' : 'disabled'}>Start round</button></div>
-      <p class="small muted">${room.players.length < 2 ? 'Invite at least one more player.' : ready ? 'Everyone’s ready to play.' : 'Shuffle roles before starting.'}</p>` : '<p class="small muted">The host will start the round.</p>'}</section>`;
+    return `<section class="card game">${heading}<h1>Waiting for players</h1><p class="muted">${assigned ? `You’re a ${p.role}.` : 'Share the code to invite friends.'}</p>${!isHost() ? '<p class="small muted">The host will start the round.</p>' : ''}</section>`;
   }
-  if (room.phase === 'ended') return `<section class="game"><h1>Round complete</h1><p class="muted">${endMessage()}</p>${room.started_at ? `<div class="stopwatch" data-stopwatch>${timeLabel(elapsed())}</div><p class="small muted">Time spent seeking</p>` : ''}${isHost() ? '<button class="button" data-action="reset">Back to lobby</button>' : '<p class="small muted">Waiting for the host to start a new round.</p>'}</section>`;
+  if (room.phase === 'ended') return `<section class="card game complete">${heading}<h1>Round complete</h1><p class="muted">${endMessage()}</p>${room.started_at ? `<div class="stopwatch" data-stopwatch>${timeLabel(elapsed())}</div><p class="small muted">Time spent seeking</p>` : ''}${!isHost() ? '<p class="small muted">Waiting for the host to start a new round.</p>' : ''}</section>`;
   if (room.phase === 'hiding') {
     const hidden = room.players.filter(p => p.role === 'sardine' && p.hidden).length;
-    return `<section class="game"><span class="role">${sardine ? 'Sardine' : 'Seeker'}</span><h1>${sardine ? p.hidden ? 'You’re hidden' : 'Go hide' : 'Wait here'}</h1><p class="muted">${hidden} of ${room.sardine_count} sardines hidden.</p>${sardine ? `<button class="button" data-action="hidden" ${p.hidden ? 'disabled' : ''}>${p.hidden ? 'Waiting for the others…' : 'I’m hidden!'}</button>` : '<p class="small muted">The search starts when everyone is hidden.</p>'}</section>`;
+    return `<section class="card game">${heading}<h1>${sardine ? p.hidden ? 'You’re hidden' : 'Go hide' : 'Wait here'}</h1><p class="muted">${hidden} of ${room.sardine_count} sardines hidden.</p>${progressBar(hidden, room.sardine_count, 'Sardines hidden')}${sardine ? `<button class="button" data-action="hidden" ${p.hidden ? 'disabled' : ''}>${p.hidden ? 'Waiting for the others…' : 'I’m hidden!'}</button>` : '<p class="small muted">The search starts when everyone is hidden.</p>'}</section>`;
   }
   const seekers = room.players.filter(p => p.role === 'seeker'), found = seekers.filter(p => p.found).length;
-  return `<section class="game"><span class="role">${sardine ? 'Sardine' : 'Seeker'}</span><h1>${sardine ? 'Stay hidden' : p.found ? 'You found them' : 'Start seeking'}</h1><div class="stopwatch" data-stopwatch>${timeLabel(elapsed())}</div><p class="muted">${found} of ${seekers.length} seekers found a sardine.</p>${sardine ? '' : `<button class="button ${p.found ? 'secondary' : ''}" data-action="found">${p.found ? 'Undo · I’m still seeking' : 'I found them!'}</button>`}</section>`;
+  return `<section class="card game">${heading}<h1>${sardine ? 'Stay hidden' : p.found ? 'You found them' : 'Start seeking'}</h1><div class="stopwatch" data-stopwatch>${timeLabel(elapsed())}</div><p class="muted">${found} of ${seekers.length} seekers found a sardine.</p>${progressBar(found, seekers.length, 'Seekers who found a sardine')}${sardine ? '' : `<button class="button ${p.found ? 'secondary' : ''}" data-action="found">${p.found ? 'Undo · I’m still seeking' : 'I found them!'}</button>`}</section>`;
+}
+
+function hostPanel() {
+  if (!isHost()) return '';
+  let controls;
+  if (room.phase === 'lobby') {
+    const ready = room.players.filter(p => p.role === 'sardine').length === room.sardine_count && room.players.length > room.sardine_count;
+    controls = `<div class="settings-row"><span id="sardines-label">Sardines</span><div class="stepper" role="group" aria-labelledby="sardines-label"><button data-action="count-down" aria-label="Fewer sardines" ${room.sardine_count <= 1 ? 'disabled' : ''}>−</button><output>${room.sardine_count}</output><button data-action="count-up" aria-label="More sardines" ${room.sardine_count >= room.players.length - 1 ? 'disabled' : ''}>+</button></div></div><div class="button-row"><button class="button secondary" data-action="randomize" ${room.players.length < 2 ? 'disabled' : ''}>Shuffle roles</button><button class="button" data-action="start" ${ready ? '' : 'disabled'}>Start round</button></div><p class="small muted">${room.players.length < 2 ? 'Invite at least one more player.' : ready ? 'Ready to start.' : 'Shuffle roles before starting.'}</p>`;
+  } else if (room.phase === 'ended') {
+    controls = '<button class="button" data-action="reset">Back to lobby</button>';
+  } else {
+    controls = '<button class="button secondary" data-action="end-confirm">End round</button>';
+  }
+  return `<section class="card host-controls"><div class="section-heading"><h2>Host controls</h2></div>${controls}</section>`;
 }
 
 function playersPanel() {
@@ -117,16 +139,16 @@ function playersPanel() {
     let status = p.role === 'sardine' ? 'Sardine' : 'Seeker';
     if (room.phase === 'hiding' && p.role === 'sardine') status = p.hidden ? 'Hidden' : 'Hiding…';
     if (['seeking', 'ended'].includes(room.phase) && p.role === 'seeker') status = p.found ? 'Found them' : 'Seeking';
-    return `<li class="player"><div class="player-info"><span class="player-name">${esc(p.name)}${p.id === room.me_id ? ' <small>(you)</small>' : ''}${p.id === room.host_id ? ' <small>· host</small>' : ''}</span><span class="player-status">${status}</span></div>${isHost() && p.id !== room.me_id ? `<button class="text-button danger-text" data-action="kick-confirm" data-player="${p.id}" aria-label="Kick ${esc(p.name)}">Kick</button>` : ''}</li>`;
+    return `<li class="player"><div class="player-info"><span class="player-name">${esc(p.name)}${p.id === room.me_id ? ' <small>(you)</small>' : ''}${p.id === room.host_id ? ' <small>· host</small>' : ''}</span><span class="player-status ${p.role}">${status}</span></div>${p.id === room.me_id ? '<button class="text-button edit-name" data-action="rename">Edit name</button>' : isHost() ? `<button class="text-button danger-text" data-action="kick-confirm" data-player="${p.id}" aria-label="Kick ${esc(p.name)}">Kick</button>` : ''}</li>`;
   }).join('');
-  return `<details class="players" id="players" ${playersOpen ? 'open' : ''}><summary>Players <span class="muted">${room.players.length}</span></summary><ul>${players}</ul></details>`;
+  return `<section class="card players"><div class="section-heading"><h2>Players</h2><span class="count">${room.players.length}</span></div><ul>${players}</ul></section>`;
 }
 
 function hintsPanel() {
-  if (room.phase === 'lobby') return '';
+  if (room.phase === 'lobby') return '<section class="card hints"><h2>Round hints</h2><p class="small muted">Hints will appear here once the round starts.</p></section>';
   const scheduled = room.scheduled_hint, canWrite = me().role === 'sardine' && room.phase !== 'ended';
   const hints = [...room.hints].reverse().map(h => `<article class="hint"><p>${esc(h.text)}</p><footer>${esc(h.author)} · ${timeLabel(h.sent_at - room.started_at)}</footer></article>`).join('');
-  return `<section class="hints"><div class="section-heading"><h2>Hints</h2>${room.phase === 'seeking' ? '<span class="small muted">Next mark in <b data-countdown></b></span>' : ''}</div>
+  return `<section class="card hints"><div class="section-heading"><h2>Round hints</h2>${room.phase === 'seeking' ? '<span class="small muted">Next mark in <b data-countdown></b></span>' : ''}</div>
     ${canWrite ? `<form id="hint-form"><label class="sr-only" for="hint-text">Hint for all players</label><textarea id="hint-text" maxlength="280" rows="2" placeholder="Write a hint…">${esc(draft)}</textarea><div class="button-row"><button type="submit" class="button secondary" data-hint="hint" ${room.phase !== 'seeking' ? 'disabled' : ''}>Send now</button><button type="submit" class="button" data-hint="schedule" ${room.phase !== 'seeking' ? 'disabled' : ''}>${scheduled ? 'Replace' : 'Queue'} for <span data-nextmark></span></button></div>${room.phase === 'hiding' ? '<p class="small muted">Draft now. Send when seeking starts.</p>' : ''}</form>${scheduled ? `<div class="scheduled"><div class="section-heading"><strong>Queued for ${timeLabel(scheduled.due_at - room.started_at)}</strong><button class="text-button" data-action="cancel_hint">Cancel</button></div><p>${esc(scheduled.text)}</p></div>` : ''}` : ''}
     <div class="hint-list" aria-label="Hints for everyone">${hints || '<p class="small muted">No hints yet.</p>'}</div></section>`;
 }
@@ -137,12 +159,13 @@ function renderRoom(force = false) {
   signature = key;
   const focused = document.activeElement, focusID = focused?.id;
   const selection = focusID === 'hint-text' ? [focused.selectionStart, focused.selectionEnd] : null;
-  root.innerHTML = `<div class="room-bar"><button class="room-code" data-action="copy" aria-label="Copy room code ${room.code}"><small>ROOM</small> ${room.code} <small>Copy</small></button><button class="text-button" data-action="rename">Edit name</button></div>
-    ${online ? '' : '<p class="connection" role="status">Reconnecting…</p>'}
-    ${gamePanel()}${hintsPanel()}${playersPanel()}
-    <div class="room-footer">${['lobby','ended'].includes(room.phase) ? '<button class="text-button" data-action="leave-confirm">Leave room</button>' : isHost() ? '<button class="text-button danger-text" data-action="end-confirm">End round</button>' : ''}</div>`;
+  updateHeader();
+  document.querySelector('#header-code').disabled = busy;
+  const canLeave = ['lobby', 'ended'].includes(room.phase);
+  root.innerHTML = `${online ? '' : '<p class="card connection" role="status">Reconnecting…</p>'}
+    ${gamePanel()}${hintsPanel()}${playersPanel()}${hostPanel()}
+    <section class="card leave-card" aria-label="Leave room"><button class="button danger" data-action="leave-confirm" ${canLeave ? '' : 'disabled aria-describedby="leave-note"'}>Leave room</button>${canLeave ? '' : '<p class="small muted" id="leave-note">You can leave when the round ends.</p>'}</section>`;
   root.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', onAction));
-  root.querySelector('#players')?.addEventListener('toggle', event => { playersOpen = event.target.open; });
   root.querySelector('#hint-text')?.addEventListener('input', event => {
     draft = event.target.value; storage.set(`sardines-draft-${session.code}`, draft);
   });
@@ -239,12 +262,13 @@ async function poll() {
     online = false;
     if (room) renderRoom(true);
     else {
-      root.innerHTML = `<section class="entry"><p class="muted">${esc(error.message)}</p><button class="button" id="retry">Try again</button><button class="text-button" id="go-home">Back</button></section>`;
+      root.innerHTML = `<section class="card entry"><p class="muted">${esc(error.message)}</p><button class="button" id="retry">Try again</button><button class="text-button" id="go-home">Back</button></section>`;
       document.querySelector('#retry').onclick = poll; document.querySelector('#go-home').onclick = forget;
     }
   } finally { polling = false; }
 }
 
+document.querySelector('#header-code').addEventListener('click', onAction);
 document.querySelector('#how-button').addEventListener('click', () => {
   document.querySelector('#dialog-content').innerHTML = '<h2 id="dialog-title">How to play</h2><ol><li>The host picks how many sardines hide, shuffles roles, and starts.</li><li>Sardines hide and tap “I’m hidden!” Everyone else waits.</li><li>Once all sardines are hidden, seekers go find them and hide alongside them.</li><li>Seekers tap “I found them!” You can undo while the round is running.</li><li>Sardines can send hints or queue them for each 5-minute mark. The round ends when everyone is found.</li></ol>';
   document.querySelector('#dialog-close').textContent = 'Close'; dialog.showModal();
@@ -256,5 +280,5 @@ setInterval(updateTimers, 250);
 setInterval(() => { if (!document.hidden) poll(); }, 2500);
 if (session) {
   draft = storage.get(`sardines-draft-${session.code}`, '');
-  root.innerHTML = '<p class="loading muted">Rejoining room…</p>'; poll();
+  root.innerHTML = '<p class="card loading muted">Rejoining room…</p>'; poll();
 } else home();
