@@ -1,4 +1,3 @@
-import copy
 import os
 import tempfile
 import unittest
@@ -7,7 +6,7 @@ from unittest.mock import patch
 
 import app as server
 from game import GameError, act, authenticate, join, new_room, player, publish_due, view
-from storage import RedisStore, SQLiteStore, StoreUnavailable, make_store
+from storage import SQLiteStore, StoreUnavailable, make_store
 
 
 class GameTests(unittest.TestCase):
@@ -326,18 +325,6 @@ class ApiTests(unittest.TestCase):
         with patch.dict(os.environ, {'VERCEL': '1'}, clear=True):
             with self.assertRaises(StoreUnavailable): make_store()
 
-    def test_redis_cas_retries_against_fresh_state(self):
-        import json
-        initial = {'players': ['Host']}
-        concurrent = {'players': ['Host', 'Racing join']}
-        redis = RedisStore('https://example.test', 'secret')
-        with patch.object(redis, 'command', side_effect=[json.dumps(initial), 0, json.dumps(concurrent), 1]) as command:
-            def update(room):
-                room['players'].append('My join')
-                return copy.deepcopy(room)
-            result = redis.update('ABC234', update)
-        self.assertEqual(result['players'], ['Host', 'Racing join', 'My join'])
-        self.assertEqual(command.call_count, 4)
 
 
 if __name__ == '__main__':

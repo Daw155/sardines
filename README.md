@@ -13,18 +13,52 @@ python app.py
 
 Open http://localhost:8000. To try multiple players, use different browsers or private windows. Friends on the same Wi-Fi can open `http://YOUR-LAN-IP:8000` if your firewall allows it. Local room data is stored in `.sardines.sqlite3`.
 
-## Deploy to Vercel
+## Deploy to Vercel with Turso
 
-1. Push this folder to your Git provider and import the repository into Vercel. Vercel detects Flask from `app.py` and `requirements.txt`; no frontend build command or output-directory override is needed.
-2. Add **Upstash Redis** through the project's **Storage / Marketplace** area and connect it to this project. Enable the environment variables for the deployment environments you intend to use (Production and Preview if needed).
-3. Ensure either pair is present in the project's environment variables:
-   - `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`, or
-   - `KV_REST_API_URL` and `KV_REST_API_TOKEN` (the integration's alternate names).
-4. Deploy or redeploy after connecting Redis. Open the deployment URL, create a room, and join from another phone.
+1. Create a database named `sardines` in the [Turso dashboard](https://app.turso.tech/). Choose a region close to your Vercel function region when available.
+2. Copy the **database URL** and generate a **read/write database auth token**. The URL can begin with `libsql://` or `https://`. Use a database token, not a Turso platform/account API token. Keep it server-side.
+3. In Vercel, open your project → **Settings → Environment Variables** and add:
 
-Alternatively, use `npx vercel` from this folder, connect Redis and the variables in the dashboard, then run `npx vercel --prod`. You need your own signed-in Vercel account and database. The app deliberately refuses to use local SQLite on Vercel because separate function instances need shared room state. `.env.example` lists the variables; Flask does not automatically load `.env` in this setup, so export variables in your shell if testing Redis locally.
+   ```text
+   TURSO_DATABASE_URL=libsql://your-database-your-organization.turso.io
+   TURSO_AUTH_TOKEN=your-database-token
+   ```
 
-Static assets live in `public/assets` so Vercel serves them through its CDN. Flask serves the same paths locally. Deployment references: [Flask on Vercel](https://vercel.com/docs/frameworks/backend/flask), [Vercel Marketplace storage](https://vercel.com/docs/marketplace-storage), [Upstash REST API](https://upstash.com/docs/redis/features/restapi).
+   Enable **Production** and **Preview** as needed. Use a separate Turso database for Preview if you want test games isolated from production.
+4. Push this version to the connected Git repository, or redeploy after saving the variables. Vercel detects Flask from `app.py` and `requirements.txt`; leave build/output overrides unset. No new Python packages or frontend build step are required.
+5. Open the deployment URL, create a room, join from another phone, and play a short round. The app automatically creates its `sardines_rooms` table and expiry index on the first database request. No manual SQL migration or cron job is needed.
+
+The [Turso CLI](https://docs.turso.tech/cli/installation) can also create the database and retrieve its connection details:
+
+```sh
+turso auth login
+turso db create sardines
+turso db show sardines --url
+turso db tokens create sardines
+```
+
+The last command prints a secret: copy it directly to Vercel, not into source control or chat. If the token has an expiry, replace it in Vercel before it expires and redeploy.
+
+Without either Turso variable, local development still uses `.sardines.sqlite3`. If only one variable is set, or Turso is missing on Vercel, the app fails explicitly instead of silently writing to local storage. `.env.example` lists the variables; Flask does not automatically load `.env`, so export variables in your shell when testing Turso locally.
+
+Static assets live in `public/assets` so Vercel serves them through its CDN. Flask serves the same paths locally. References: [Flask on Vercel](https://vercel.com/docs/frameworks/backend/flask), [Turso SQL over HTTP](https://docs.turso.tech/sdk/http/quickstart).
+
+### Switching an existing deployment from Redis
+
+- Add the Turso variables **before pushing/deploying this version**. This version uses Turso only in production; the old Upstash/KV variables are ignored.
+- Switch between games. Existing Redis rooms are not copied; players create new rooms after deployment. Saved browser sessions for old rooms return to the entry form when the room is not found.
+- The migration does not delete or modify your Redis database. Leave the old integration in place until the Turso deployment is verified, then disconnect it and remove its old environment variables if you no longer need it. Old deployments still running the Redis version can continue using Redis until they are retired.
+- To roll back, redeploy the previous code with the original Redis variables still configured. New Turso rooms will not appear in the old Redis deployment.
+
+### Optional live Turso connection check
+
+After exporting the two variables in your terminal, run:
+
+```sh
+.venv/bin/python scripts/check_turso.py
+```
+
+This initializes the schema, creates a randomly named temporary check row, verifies reads and updates, and removes that row. It does not print credentials. Use this to verify the real service before deployment. The automated test suite runs without cloud credentials and simulates Turso's HTTP responses using real local SQL; it does not prove a live Turso connection works.
 
 ## How it works
 
@@ -50,7 +84,7 @@ Choose the address before a game: browser sessions are saved per origin, so swit
 
 Clients poll every 2.5 seconds while visible. Timers use server timestamps and render smoothly between polls. Scheduled hints are saved on the server and published atomically by the next room request at or after their boundary, even if the author disconnects. **No background worker or cron is needed:** if every phone is asleep, publication is reconciled when someone opens the app, using the original scheduled timestamp. Hints require a sardine to write and queue them; the app does not invent clues automatically.
 
-SQLite transactions handle local concurrency; Redis compare-and-set Lua scripts prevent lost updates across serverless instances. Rooms expire after 24 hours without activity. A room supports up to 40 players and retains the most recent 200 hints per round. Scheduled hints are canceled when a round ends.
+SQLite transactions handle local concurrency. Turso uses parameterized SQL and a version check on every write; conflicting requests reload and retry, preventing lost joins, votes, or duplicated scheduled hints across serverless instances. Ordinary polls perform one indexed room lookup and no writes. Room changes refresh the 24-hour expiry; unchanged polls refresh it at most about once an hour per room. Consequently, an idle room expires roughly 23–24 hours after its last activity. Expired rooms are immediately unavailable, and each new-room creation removes up to 100 expired records using the expiry index. Schema setup happens once per store instance, and does not run on every poll. A room supports up to 40 players and retains the most recent 200 hints per round. Scheduled hints are canceled when a round ends.
 
 This is intended for small private friend groups. Anyone with a room code can join between rounds; there is no account system or public directory. For a large public launch, add rate limiting and abuse controls.
 
@@ -61,4 +95,4 @@ This is intended for small private friend groups. Anyone with a room code can jo
 node --check public/assets/app.js
 ```
 
-Tests cover round transitions, all-sardines readiness, found/undo, automatic ending, host permissions, kicking during all phases, name changes, revoked access, join restrictions, scheduled hint timing, draft privacy, replay, reconnects, request validation, concurrent joins, and Redis conflict retries.
+Tests cover round transitions, all-sardines readiness, found/undo, automatic ending, host permissions, kicking during all phases, name changes, revoked access, join restrictions, scheduled hint timing, draft privacy, replay, reconnects, request validation, concurrent joins, Turso conflict retries, expiry, parameter binding, protocol/network failures, and read-only polling.
