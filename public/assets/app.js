@@ -44,6 +44,13 @@ const me = () => room?.players.find((p) => p.id === room.me_id);
 const isHost = () => room?.host_id === room?.me_id;
 const requestID = () => [...crypto.getRandomValues(new Uint8Array(24))].map((n) => n.toString(16).padStart(2, "0")).join("");
 
+function actionIcon(action) {
+    const paths = action === "edit"
+        ? '<path d="m16 3 5 5-12 12-6 1 1-6Z"/><path d="m13 6 5 5"/>'
+        : '<circle cx="9" cy="7" r="4"/><path d="M2 21v-2a7 7 0 0 1 14 0v2M17 10h6"/>';
+    return `<svg class="action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
+}
+
 function toast(message) {
     const el = document.querySelector("#toast");
     el.textContent = message;
@@ -104,7 +111,7 @@ function home() {
     <input id="player-name" name="name" placeholder="Name or nickname" maxlength="24" autocomplete="nickname" value="${esc(homeName)}" required>
     <div class="entry-actions">
       <button class="button" type="submit" data-entry="create">Create</button>
-      <div class="join-row"><label class="sr-only" for="room-code">Room code</label><input id="room-code" name="code" placeholder="Code" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${esc(joinCode)}"><button class="button secondary" type="submit" data-entry="join">Join</button></div>
+      <div class="join-row"><label class="sr-only" for="room-code">Room code</label><input id="room-code" name="code" placeholder="Code" maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${esc(joinCode)}"><button class="button" type="submit" data-entry="join">Join</button></div>
     </div>
   </form>`;
     document.querySelector("#entry-form").addEventListener("submit", enter);
@@ -161,7 +168,7 @@ function progressBar(value, total, label) {
 function gamePanel() {
     const p = me(),
         sardine = p.role === "sardine";
-    const heading = `<div class="section-heading"><h2>Round progress</h2><span class="role ${sardine ? "sardine" : "seeker"}">${sardine ? "Sardine" : "Seeker"}</span></div>`;
+    const heading = `<div class="section-heading"><h2>Round progress</h2><span class="role ${sardine ? "sardine" : "seeker"}" aria-label="Your role: ${sardine ? "Sardine" : "Seeker"}">${sardine ? "Sardine" : "Seeker"}</span></div>`;
     if (room.phase === "lobby") {
         const assigned = room.players.some((p) => p.role === "sardine");
         return `<section class="card game">${heading}<h1>Waiting for players</h1><p class="muted">${assigned ? `You’re a ${p.role}.` : "Share the code to invite friends."}</p>${!isHost() ? '<p class="small muted">The host will start the round.</p>' : ""}</section>`;
@@ -194,10 +201,11 @@ function hostPanel() {
 function playersPanel() {
     const players = room.players
         .map((p) => {
-            let status = p.role === "sardine" ? "Sardine" : "Seeker";
+            const role = p.role === "sardine" ? "Sardine" : "Seeker";
+            let status = "";
             if (room.phase === "hiding" && p.role === "sardine") status = p.hidden ? "Hidden" : "Hiding…";
             if (["seeking", "ended"].includes(room.phase) && p.role === "seeker") status = p.found ? "Found them" : "Seeking";
-            return `<li class="player"><div class="player-info"><span class="player-name">${esc(p.name)}${p.id === room.me_id ? " <small>(you)</small>" : ""}${p.id === room.host_id ? " <small>· host</small>" : ""}</span><span class="player-status ${p.role}">${status}</span></div>${p.id === room.me_id ? '<button class="text-button edit-name" data-action="rename">Edit name</button>' : isHost() ? `<button class="text-button danger-text" data-action="kick-confirm" data-player="${p.id}" aria-label="Kick ${esc(p.name)}">Kick</button>` : ""}</li>`;
+            return `<li class="player"><div class="player-info"><span class="player-name">${esc(p.name)}${p.id === room.me_id ? " <small>(you)</small>" : ""}${p.id === room.host_id ? " <small>· host</small>" : ""}</span><div class="player-details"><span class="role role-small ${p.role}">${role}</span>${status ? `<span class="player-status">${status}</span>` : ""}</div></div>${p.id === room.me_id ? `<button class="text-button player-action edit-name" data-action="rename" aria-label="Edit your name">${actionIcon("edit")}<span>Edit</span></button>` : isHost() ? `<button class="text-button player-action danger-text" data-action="kick-confirm" data-player="${p.id}" aria-label="Kick ${esc(p.name)}">${actionIcon("kick")}<span>Kick</span></button>` : ""}</li>`;
         })
         .join("");
     return `<section class="card players"><div class="section-heading"><h2>Players</h2><span class="count">${room.players.length}</span></div><ul>${players}</ul></section>`;
